@@ -1,0 +1,50 @@
+# Ignore fullhouse directory
+fullhouse/
+FullHouseModeling.pdf
+BasicTPoolExperiment.Rmd
+BPMEraAdjustment.Rmd
+TSExperiment.Rmd
+test.ipynb
+nba_data_1980_present/
+talent_pool_estimation/population.csv
+
+
+# Python cache / compiled files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# R / RStudio
+.Rhistory
+.RData
+.Rproj.user/
+
+# Output / results
+output_results/
+
+# Data files (optional – uncomment if you don’t want to track raw data)
+# *.csv
+
+# Logs
+*.log
+
+# MacOS
+.DS_Store
+
+# VS Code
+.vscode/
+
+# Environment files
+.env
+.venv/
+env/
+venv/
+
+# Temporary files
+*.tmp
+*.swpfullhouse/
+fullhouse/

@@ -1,0 +1,63 @@
+---
+title: "BPMEraAdjust_V2"
+author: "Ethan Mathew"
+date: "2026-03-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(dplyr)
+library(fullhouse)
+
+# ---------------------------------------------------
+# LOAD DATA
+# ---------------------------------------------------
+
+talent_pool <- read.csv("talent_pool_estimation/talent_pool.csv") %>%
+  mutate(talent_pool = talent_pool * 1000000) %>%
+  rename(season = year)
+
+df <- read.csv(
+  "basketball_reference_scraper/data/nba_advanced_1950_2025.csv",
+  stringsAsFactors = FALSE
+)
+
+# ---------------------------------------------------
+# CLEAN DATA
+# ---------------------------------------------------
+
+df_clean <- df %>%
+  filter(ranker != "Rk") %>%
+  filter(!grepl("League", name_display)) %>%
+  filter(!is.na(name_display),
+         name_display != "",
+         name_display != "Player") %>%
+  filter(!is.na(team_name_abbr),
+         team_name_abbr != "",
+         team_name_abbr != "Team") %>%
+  mutate(
+    age   = as.numeric(age),
+    games = as.numeric(games),
+    mp    = as.numeric(mp),
+    bpm   = as.numeric(bpm)
+  ) %>%
+  filter(!is.na(bpm), mp >= 500, games >= 30)
+
+# ---------------------------------------------------
+# HANDLE MULTI TEAM SEASONS (TOT ROWS)
+# ---------------------------------------------------
+
+df_clean <- df_clean %>%
+  group_by(name_display, season) %>%
+  mutate(has_tot = any(team_name_abbr == "TOT")) %>%
+  filter(!(has_tot & team_name_abbr != "TOT")) %>%
+  slice(1) %>%
+  select(-has_tot) %>%
+  ungroup()
+```
