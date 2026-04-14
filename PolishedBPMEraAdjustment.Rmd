@@ -9,7 +9,12 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+```{r}
+install.packages("VGAM")
+library(VGAM)
+```
+
+## Cleaning and Reading Files
 
 ```{r}
 library(dplyr)
@@ -20,7 +25,7 @@ library(fullhouse)
 # ---------------------------------------------------
 
 talent_pool <- read.csv("talent_pool_estimation/talent_pool.csv") %>%
-  mutate(talent_pool = talent_pool * 1000000) %>%
+  mutate(talent_pool = talent_adj * 1000000) %>%
   rename(season = year)
 
 df <- read.csv(
@@ -60,4 +65,479 @@ df_clean <- df_clean %>%
   slice(1) %>%
   select(-has_tot) %>%
   ungroup()
+
+df_bpm <- df_clean %>%
+  left_join(talent_pool, by = "season")
+
+df_bpm <- df_bpm %>% 
+  select("name_display", "bpm", "talent_pool", "per", "season")
+```
+
+## Final DataFrame Head
+
+```{r}
+head(df_bpm)
+# df_bpm <- df_bpm %>%
+#   filter(season == "1999")
+
+```
+
+## Reference Era Computations
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+REF_YEARS <- 1985:2018
+
+ref_df <- df_bpm %>%
+  filter(season %in% REF_YEARS)
+
+ref_y <- sort(ref_df$bpm)
+
+ref_npop <- mean(ref_df$talent_pool, na.rm = TRUE)
+
+ref_k <- k_finder(ref_y)
+
+ref_ystarstar <- compute_ystarstar(ref_y, ref_k)$ystarstar
+
+ref_talents <- talent_computing_nonpara(
+  ystarstar = ref_ystarstar,
+  y         = ref_y,
+  npop      = ref_npop
+)
+
+ref_n <- length(ref_y)
+
+ref_ystar <- ref_y[2] - ref_y[1]
+
+ref_ytilde <- numeric(ref_n + 1)
+
+ref_ytilde[1] <- ref_y[1] - ref_ystar
+
+ref_ytilde[2:ref_n] <- (ref_y[2:ref_n] + ref_y[1:(ref_n-1)]) / 2
+
+ref_ytilde[ref_n + 1] <- ref_y[ref_n] + ref_ystarstar
+```
+
+## Computing Talent Scores
+
+```{r}
+season_talents <- df_bpm %>%
+  group_by(season) %>%
+  group_modify(function(data, key){
+
+    npop <- data$talent_pool[1]
+    fail_stage <- NA
+
+    y <- sort(data$bpm)
+
+    if(length(y) < 6 || is.na(npop)){
+      fail_stage <- "data_insufficient"
+      data$talent_score <- NA
+      data$fail_stage <- fail_stage
+      return(data)
+    }
+
+    k <- tryCatch(k_finder(y), error=function(e) NULL)
+
+    if(is.null(k)){
+      fail_stage <- "k_finder"
+      data$talent_score <- NA
+      data$fail_stage <- fail_stage
+      return(data)
+    }
+
+    yss <- tryCatch(compute_ystarstar(y,k)$ystarstar,
+                    error=function(e) NULL)
+
+    if(is.null(yss)){
+      fail_stage <- "ystarstar"
+      data$talent_score <- NA
+      data$fail_stage <- fail_stage
+      return(data)
+    }
+
+    talents <- tryCatch(
+      talent_computing_nonpara(
+        ystarstar = yss,
+        y = y,
+        npop = npop
+      ),
+      error=function(e) NULL
+    )
+
+    if(is.null(talents)){
+      fail_stage <- "talent_compute"
+      data$talent_score <- NA
+      data$fail_stage <- fail_stage
+      return(data)
+    }
+
+    data_sorted <- data %>% arrange(bpm)
+    data_sorted$talent_score <- talents
+    data_sorted$fail_stage <- "success"
+
+    return(data_sorted)
+  }) %>%
+  ungroup()
+```
+
+## Computing Era Adjusted Score
+
+```{r}
+# THIS CAN BE ADJUSTED
+season_talents <- season_talents %>%
+  mutate(
+    bpm_era_adj = approx(
+      x = ref_talents,
+      y = ref_y,
+      xout = talent_score,
+      rule = 2
+    )$y
+  )
+
+
+season_talents %>%
+  filter(!is.na(bpm_era_adj)) %>%
+  arrange(desc(bpm_era_adj)) %>%
+  select(name_display, season, bpm, talent_score, bpm_era_adj)
+```
+
+## K-Value and Y\*\* Investigation
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+plot_tail_model_true <- function(season){
+  data <- df_bpm %>% filter(season == !!season)
+  y <- sort(data$bpm)
+  npop <- data$talent_pool[1]
+  
+  if(length(y) < 6 || is.na(npop)){
+    print("Insufficient data")
+    return(NULL)
+  }
+  
+  k   <- k_finder(y)
+  res <- compute_ystarstar(y, k)
+  k   <- as.numeric(k$k[1])
+  
+  print(paste("k =", k, "| n =", length(y)))
+  
+  # extract from res
+  yss   <- as.numeric(res$ystarstar)[1]
+  model <- res$model
+  Y     <- res$Y
+  W     <- res$W
+  
+  # tail points pulled directly from model to guarantee alignment with red line
+  x_tail <- model$model[, 2]
+  y_tail <- model$model[, 1]
+  
+  # detect transformation from model formula
+  f        <- deparse(formula(model))
+  uses_log <- grepl("log(tail(W", f, fixed = TRUE)
+  
+  # reconstruct x for non-tail using same transformation
+  n_full <- length(y)
+  j_all  <- 1:n_full
+  p_all  <- (j_all - 1/3) / (n_full + 1/3)
+  W_all  <- p_all / (1 - p_all)   # odds = W
+  
+  if(uses_log){
+    W_all <- log(W_all)
+  }
+  
+  x_nontail <- head(W_all, n_full - k)
+  y_nontail <- head(y, n_full - k)
+  
+  # plot
+  plot(
+    x_nontail, y_nontail,
+    pch  = 19,
+    col  = "black",
+    xlim = range(c(x_nontail, x_tail)),
+    ylim = range(y),
+    main = paste("Season", season),
+    xlab = ifelse(uses_log, "log(W)", "W"),
+    ylab = "BPM"
+  )
+  
+  points(x_tail, y_tail, pch = 19, col = "blue")
+  abline(model, col = "red", lwd = 2)
+}
+
+plot_tail_model_true(2000)
+```
+
+## Reproduction of Technical Primer
+
+```{r}
+bpm_generations <- df_bpm %>%
+  group_by(season) %>%
+  group_split() %>%
+  lapply(function(x) arrange(x, desc(bpm))) %>%
+  setNames(sort(unique(df_bpm$season)))
+bpm_generations[[1]]
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+library(parallel)
+library(fullhouse)
+
+nCores = detectCores() - 2
+
+cl <- makeCluster(nCores)
+system.time({
+  kmat = do.call(rbind, mclapply(seq_along(bpm_generations), 
+    FUN = function(j) {
+      k_finder(x = bpm_generations[[j]] %>% pull(bpm))  
+    }, mc.cores = nCores))
+})
+stopCluster(cl)
+
+```
+
+```{r}
+kmat
+```
+
+```{r}
+new_compute_ystarstar <- function(x, k_info, method = "robust", stab = 0.01, cutoff = 0.014) {
+  stopifnot(method %in% c("robust", "legacy"))
+  Y = sort(as.matrix(x))
+  n = length(Y)
+  Y[n] = Y[n] + stab
+  pi = 1 - (n:1 - 1/3)/(n + 1/3)
+  W = log(pi/(1 - pi))
+  ystarstar = 10
+  ub = 0.999
+  k = k_info$k
+  k_selector_I0 = k_info$k_selector_I0
+  a = k_info$a
+  b = k_info$b
+  ind = k_info$ind
+  if (method == "robust") {
+    
+    # Helper: choose search interval based on whether max point is below or above the curve
+    get_search_interval = function(model, W, Y) {
+      at_max_W = predict(model, newdata = data.frame(W = max(W)))
+      if (max(Y) > at_max_W) {
+        # max point is above curve — crossing is far out in tail
+        return(c(mean(c(tail(W, 2)[1], max(W))), max(W) + 2))
+      } else {
+        # max point is below curve — crossing is earlier, before max(W)
+        return(c(0, max(W)))
+      }
+    }
+    
+    models = list(m1 = lm(tail(Y, k) ~ tail(W, k)), m2 = lm(tail(Y, 
+                                                                 k) ~ tail(W, k) + I(tail(W, k)^2)))
+    models = models[names(sort(sapply(models, BIC)))]
+    selected_model = models[[1]]
+    f = function(w) {
+      max(Y) - predict(selected_model, newdata = data.frame(W = w))
+    }
+    flag = try({
+      ub_w = uniroot(f, get_search_interval(selected_model, W, Y), 
+                     tol = 1e-10)$root
+      ub = 1/(1 + exp(-ub_w))
+    }, silent = TRUE)
+    if (class(flag) != "try-error") {
+      try({
+        g = function(ystarstar) ub - Ftilde(y = Y, t = max(Y), 
+                                            ystarstar = ystarstar)
+        bar = uniroot(g, c(0, 100), tol = 1e-10)
+        ystarstar = bar$root
+      }, silent = TRUE)
+    }
+    if (ystarstar == 10) {
+      selected_model = models[[2]]
+      f = function(w) {
+        max(Y) - predict(selected_model, newdata = data.frame(W = w))
+      }
+      flag = try({
+        ub_w = uniroot(f, get_search_interval(selected_model, W, Y), 
+                       tol = 1e-10)$root
+        ub = 1/(1 + exp(-ub_w))
+      }, silent = TRUE)
+      if (class(flag) != "try-error") {
+        try({
+          g = function(ystarstar) ub - Ftilde(y = Y, 
+                                              t = max(Y), ystarstar = ystarstar)
+          bar = uniroot(g, c(0, 100), tol = 1e-10)
+          ystarstar = bar$root
+        }, silent = TRUE)
+      }
+    }
+    models = list(m1 = lm(tail(Y, k) ~ log(tail(W, k))), 
+                  m2 = lm(tail(Y, k) ~ log(tail(W, k)) + I(log(tail(W, 
+                                                                    k))^2)))
+    if (any(BIC(selected_model) > sapply(models, BIC))) {
+      models = models[names(sort(sapply(models, BIC)))]
+      selected_model = models[[1]]
+      f = function(w) {
+        max(Y) - predict(selected_model, newdata = data.frame(W = w))
+      }
+      flag = try({
+        ub_w = uniroot(f, get_search_interval(selected_model, W, Y), 
+                       tol = 1e-10)$root
+        ub = 1/(1 + exp(-ub_w))
+      }, silent = TRUE)
+      if (class(flag) != "try-error") {
+        try({
+          g = function(ystarstar) ub - Ftilde(y = Y, 
+                                              t = max(Y), ystarstar = ystarstar)
+          bar = uniroot(g, c(0, 100), tol = 1e-10)
+          ystarstar = bar$root
+        }, silent = TRUE)
+      }
+      if (ystarstar == 10) {
+        selected_model = models[[2]]
+        f = function(w) {
+          max(Y) - predict(selected_model, newdata = data.frame(W = w))
+        }
+        flag = try({
+          ub_w = uniroot(f, get_search_interval(selected_model, W, Y), 
+                         tol = 1e-10)$root
+          ub = 1/(1 + exp(-ub_w))
+        }, silent = TRUE)
+        if (class(flag) != "try-error") {
+          try({
+            g = function(ystarstar) ub - Ftilde(y = Y, 
+                                                t = max(Y), ystarstar = ystarstar)
+            bar = uniroot(g, c(0, 100), tol = 1e-10)
+            ystarstar = bar$root
+          }, silent = TRUE)
+        }
+      }
+    }
+    if (ystarstar == 10) {
+      selected_model = lm(tail(Y, k) ~ tail(W, k) + I(tail(W, 
+                                                           k)^2) + I(tail(W, k)^3))
+      f = function(w) {
+        max(Y) - predict(selected_model, newdata = data.frame(W = w))
+      }
+      flag = try({
+        ub_w = uniroot(f, get_search_interval(selected_model, W, Y), 
+                       tol = 1e-10)$root
+        ub = 1/(1 + exp(-ub_w))
+      }, silent = TRUE)
+      if (class(flag) != "try-error") {
+        try({
+          g = function(ystarstar) ub - Ftilde(y = Y, 
+                                              t = max(Y), ystarstar = ystarstar)
+          bar = uniroot(g, c(0, 100), tol = 1e-10)
+          ystarstar = bar$root
+        }, silent = TRUE)
+      }
+    }
+  }
+  out = list(ystarstar = ystarstar, model = selected_model, 
+             Y = tail(Y, k), pi = tail(pi, k), W = tail(W, k))
+  return(out)
+}
+```
+
+```{r}
+system.time({
+  out = mclapply(seq_along(bpm_generations), 
+    FUN = function(j) { 
+      new_compute_ystarstar(x = bpm_generations[[j]] %>% pull(bpm), 
+                        k = kmat[j, 1])
+      }, 
+    mc.cores = nCores)
+})
+```
+
+```{r}
+ystar_mat = do.call(rbind, lapply(seq_along(bpm_generations), 
+  function(j) out[[j]]$ystar )
+)
+```
+
+```{r}
+ystar_mat
+```
+
+```{r}
+par(mfrow = c(2,3))            
+for(j in 1:6){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+par(mfrow = c(2,3))
+for(j in 7:12){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+par(mfrow = c(2,3))
+for(j in 13:18){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+
+
+par(mfrow = c(2,3))
+for(j in 19:24){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+
+par(mfrow = c(2,3))
+for(j in 25:30){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+
+par(mfrow = c(2,3))
+for(j in 31:36){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+par(mfrow = c(2,3))
+for(j in 37:42){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+par(mfrow = c(2,3))
+for(j in 43:48){
+  plot(out[[j]]$W, out[[j]]$Y, main = paste("Year ", 1973 + j), 
+       xlab = "function of tail probabilities", ylab = "bpm")
+  lines(out[[j]]$W, predict(out[[j]]$model))  
+}
+```
+
+```{r}
+system.time({
+  bpm_adjust_vs_peers = 
+    do.call(rbind, 
+          mclapply(seq_along(bpm_generations), 
+                   mc.cores = nCores, function(j){
+                     cbind(bpm_generations[[j]], 
+                           "bpm_talent" = 
+                       talent_computing_nonpara(ystar = as.numeric(ystar_mat[j, 1]), 
+                                              y = bpm_generations[[j]] %>% pull(bpm), 
+                                              npop = bpm_generations[[j]]$talent_pool[j]))
+                     })) %>% arrange(desc(bpm_talent))
+})
+```
+
+```{r}
+bpm_adjust_vs_peers
+```
+
+```{r}
+foo = data.frame(diff = sapply(bpm_generations, function(x){
+  -head(x %>% pull(bpm) %>% diff(), 1)}),
+  n = sapply(bpm_generations, nrow), 
+  yss = ystar_mat) %>% 
+  mutate(balance = (diff/2)/((diff/2) + yss),
+         U_beta = 1 - 1/n + 1/n * (diff/2)/((diff/2) + yss),
+         p_beta = pbeta(U_beta, n, 1), 
+         group = seq_along(bpm_generations))
+foo
 ```
