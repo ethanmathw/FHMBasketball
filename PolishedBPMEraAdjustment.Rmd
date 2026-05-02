@@ -70,13 +70,13 @@ df_bpm <- df_clean %>%
   left_join(talent_pool, by = "season")
 
 df_bpm <- df_bpm %>% 
-  select("name_display", "bpm", "talent_pool", "per", "season")
+  select("name_display", "bpm", "talent_pool", "per", "season", "mp")
 ```
 
 ## Final DataFrame Head
 
 ```{r}
-head(df_bpm)
+head(df_clean)
 # df_bpm <- df_bpm %>%
 #   filter(season == "1999")
 
@@ -540,4 +540,43 @@ foo = data.frame(diff = sapply(bpm_generations, function(x){
          p_beta = pbeta(U_beta, n, 1), 
          group = seq_along(bpm_generations))
 foo
+```
+
+## Era Adjusting Careers
+
+```{r}
+df_clean <- bpm_adjust_vs_peers %>%
+  filter(season <= 2023, !is.na(bpm_talent), !is.na(bpm), !is.na(mp))
+
+ref_season <- 2000:2010
+
+ref_dist <- df_clean %>%
+  filter(season %in% ref_season) %>%
+  arrange(bpm_talent) %>%
+  mutate(ref_percentile = row_number() / n())
+
+map_to_ref <- function(talent_score, ref_dist) {
+  idx <- which.min(abs(ref_dist$bpm_talent - talent_score))
+  return(ref_dist$bpm[idx])
+}
+
+df_mapped <- df_clean %>%
+  rowwise() %>%
+  mutate(bpm = map_to_ref(bpm_talent, ref_dist)) %>%
+  ungroup()
+
+career_bpm <- df_mapped %>%
+  group_by(name_display) %>%
+  summarise(
+    total_mp = sum(mp),
+    career_bpm = sum(bpm * mp) / total_mp
+  ) %>%
+  filter(total_mp > 0) %>%
+  arrange(desc(career_bpm))
+
+head(career_bpm, 10000)
+```
+
+```{r}
+df_mapped
 ```

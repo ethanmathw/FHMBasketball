@@ -2,7 +2,7 @@ import os
 import time
 import random
 import pandas as pd
-from scraper.scraper_script import BRefAdvancedScraper
+from basketball_reference_scraper.scraper.scraper_script import BRefAdvancedScraper
 
 def run_player_pipeline(start_year, end_year):
     print("Starting NBA Advanced Stats Pipeline...")
@@ -60,4 +60,4 @@ def run_state_pipieline():
 
 
 if __name__ == "__main__":
-    run_state_pipieline()
+    run_player_pipeline(1950, 2026)
